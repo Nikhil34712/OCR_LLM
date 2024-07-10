@@ -107,8 +107,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun preprocessImage(bitmap: Bitmap): ByteBuffer {
         val modelInputWidth = 160
-        val modelInputHeight = 80  // Changed from 155 to 80 to match 12800 bytes
-        val channels = 1  // Grayscale image
+        val modelInputHeight = 80
+        val channels = 1
 
         val resizedBitmap = Bitmap.createScaledBitmap(bitmap, modelInputWidth, modelInputHeight, true)
         val byteBuffer = ByteBuffer.allocateDirect(modelInputWidth * modelInputHeight * channels)
@@ -133,20 +133,20 @@ class MainActivity : AppCompatActivity() {
         val byteArray = ByteArray(outputBuffer.remaining())
         outputBuffer.get(byteArray)
 
-        // Attempt to decode as UTF-8 text
+
         val decodedText = try {
             String(byteArray, Charsets.UTF_8).trim()
         } catch (e: Exception) {
             "Error decoding text: ${e.message}"
         }
 
-        // If the decoded text is empty or just whitespace, try interpreting as token indices
+
         if (decodedText.isBlank()) {
             val intBuffer = outputBuffer.asIntBuffer()
             val intArray = IntArray(intBuffer.remaining())
             intBuffer.get(intArray)
 
-            // Assuming token indices start from 0 and correspond to characters
+
             val sb = StringBuilder()
             for (index in intArray) {
                 if (index >= 0 && index < charMap.size) {
@@ -159,7 +159,6 @@ class MainActivity : AppCompatActivity() {
         return "Extracted Text: $decodedText"
     }
 
-    // Define a character map. This should match your model's vocabulary.
     private val charMap = listOf(" ", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", ",", ":", "-", "(", ")", "/")
 }
 
