@@ -1,7 +1,9 @@
 package com.example.ocr_llm
+import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.util.Log
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.TextView
@@ -19,11 +21,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var resultTextView: TextView
     private lateinit var processButton: Button
 
-    // Adjust these values based on your TrOCR model's requirements
-    private val imageSize = 224
+    private val imageSize = 320
     private val numChannels = 3
-    private val maxOutputLength = 128 // Adjust based on your model's output
+    private val maxOutputLength = 128
 
+    @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -33,7 +35,8 @@ class MainActivity : AppCompatActivity() {
         processButton = findViewById(R.id.processButton)
 
         try {
-            trOcrInterpreter = Interpreter(loadModelFile("trocr_model.tflite"))
+            trOcrInterpreter = Interpreter(loadModelFile("crnn_dr.tflite"))
+            println(trOcrInterpreter.inputTensorCount)
         } catch (e: Exception) {
             e.printStackTrace()
             resultTextView.text = "Error loading model: ${e.message}"
@@ -41,6 +44,18 @@ class MainActivity : AppCompatActivity() {
 
         processButton.setOnClickListener { performOCR() }
     }
+
+    private fun logModelInfo(interpreter: Interpreter) {
+        val inputTensor = interpreter.getInputTensor(0)
+        val outputTensor = interpreter.getOutputTensor(0)
+
+        Log.d("OCR", "Input shape: ${inputTensor.shape().contentToString()}")
+        Log.d("OCR", "Input dataType: ${inputTensor.dataType()}")
+        Log.d("OCR", "Output shape: ${outputTensor.shape().contentToString()}")
+        Log.d("OCR", "Output dataType: ${outputTensor.dataType()}")
+    }
+
+
 
     private fun loadModelFile(modelName: String): MappedByteBuffer {
         val fileDescriptor = assets.openFd(modelName)
@@ -55,41 +70,34 @@ class MainActivity : AppCompatActivity() {
         val bitmap = getBitmapFromImageView()
         if (bitmap != null) {
             val inputBuffer = preprocessImage(bitmap)
-            val outputBuffer = ByteBuffer.allocateDirect(maxOutputLength * 4).order(ByteOrder.nativeOrder())
+            Log.d("OCR", "Input buffer size: ${inputBuffer.capacity()} bytes")
 
-            trOcrInterpreter.run(inputBuffer, outputBuffer)
+            val inputTensor = trOcrInterpreter.getInputTensor(0)
+            val outputTensor = trOcrInterpreter.getOutputTensor(0)
+            Log.d("OCR", "Input tensor shape: ${inputTensor.shape().contentToString()}")
+            Log.d("OCR", "Output tensor shape: ${outputTensor.shape().contentToString()}")
 
-            val result = postprocessOutput(outputBuffer)
-            resultTextView.text = result
+            val outputSize = outputTensor.numBytes()
+            val outputBuffer = ByteBuffer.allocateDirect(outputSize).order(ByteOrder.nativeOrder())
+
+            try {
+                trOcrInterpreter.run(inputBuffer, outputBuffer)
+                Log.d("OCR", "Model execution successful")
+
+                val result = postprocessOutput(outputBuffer)
+                Log.d("OCR", "OCR Result: $result")
+                resultTextView.text = result
+            } catch (e: Exception) {
+                Log.e("OCR", "Error during OCR: ${e.message}", e)
+                resultTextView.text = "Error: ${e.message}"
+            }
         } else {
             resultTextView.text = "Error: Could not get bitmap from image view"
         }
     }
-
     private fun getBitmapFromImageView(): Bitmap? {
-        // In a real app, you'd implement logic to get the actual bitmap
-        // This is just a placeholder using a sample image from assets
         return try {
-            val inputStream = assets.open("image.jpg")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            val inputStream = assets.open("sample_image.jpg")
             BitmapFactory.decodeStream(inputStream)
         } catch (e: Exception) {
             e.printStackTrace()
@@ -98,30 +106,60 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun preprocessImage(bitmap: Bitmap): ByteBuffer {
-        val scaledBitmap = Bitmap.createScaledBitmap(bitmap, imageSize, imageSize, true)
-        val inputBuffer = ByteBuffer.allocateDirect(imageSize * imageSize * numChannels * 4)
-        inputBuffer.order(ByteOrder.nativeOrder())
+        val modelInputWidth = 160
+        val modelInputHeight = 80  // Changed from 155 to 80 to match 12800 bytes
+        val channels = 1  // Grayscale image
 
-        val intValues = IntArray(imageSize * imageSize)
-        scaledBitmap.getPixels(intValues, 0, scaledBitmap.width, 0, 0, scaledBitmap.width, scaledBitmap.height)
+        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, modelInputWidth, modelInputHeight, true)
+        val byteBuffer = ByteBuffer.allocateDirect(modelInputWidth * modelInputHeight * channels)
+        byteBuffer.order(ByteOrder.nativeOrder())
 
-        inputBuffer.rewind()
+        val intValues = IntArray(modelInputWidth * modelInputHeight)
+        resizedBitmap.getPixels(intValues, 0, modelInputWidth, 0, 0, modelInputWidth, modelInputHeight)
+
         for (pixelValue in intValues) {
-            inputBuffer.putFloat(((pixelValue shr 16 and 0xFF) - 128) / 128f)
-            inputBuffer.putFloat(((pixelValue shr 8 and 0xFF) - 128) / 128f)
-            inputBuffer.putFloat(((pixelValue and 0xFF) - 128) / 128f)
+            val grayscale = (pixelValue shr 16 and 0xFF) * 0.299f +
+                    (pixelValue shr 8 and 0xFF) * 0.587f +
+                    (pixelValue and 0xFF) * 0.114f
+            byteBuffer.put((grayscale).toInt().toByte())
         }
 
-        return inputBuffer
+        byteBuffer.rewind()
+        return byteBuffer
     }
 
     private fun postprocessOutput(outputBuffer: ByteBuffer): String {
         outputBuffer.rewind()
-        val outputArray = FloatArray(maxOutputLength)
-        outputBuffer.asFloatBuffer().get(outputArray)
+        val byteArray = ByteArray(outputBuffer.remaining())
+        outputBuffer.get(byteArray)
 
-        // This is a placeholder. You'll need to implement the actual decoding
-        // based on your model's output format (e.g., token IDs to text)
-        return outputArray.joinToString(", ")
+        // Attempt to decode as UTF-8 text
+        val decodedText = try {
+            String(byteArray, Charsets.UTF_8).trim()
+        } catch (e: Exception) {
+            "Error decoding text: ${e.message}"
+        }
+
+        // If the decoded text is empty or just whitespace, try interpreting as token indices
+        if (decodedText.isBlank()) {
+            val intBuffer = outputBuffer.asIntBuffer()
+            val intArray = IntArray(intBuffer.remaining())
+            intBuffer.get(intArray)
+
+            // Assuming token indices start from 0 and correspond to characters
+            val sb = StringBuilder()
+            for (index in intArray) {
+                if (index >= 0 && index < charMap.size) {
+                    sb.append(charMap[index])
+                }
+            }
+            return "Extracted Text: ${sb.toString().trim()}"
+        }
+
+        return "Extracted Text: $decodedText"
     }
+
+    // Define a character map. This should match your model's vocabulary.
+    private val charMap = listOf(" ", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", ",", ":", "-", "(", ")", "/")
 }
+
