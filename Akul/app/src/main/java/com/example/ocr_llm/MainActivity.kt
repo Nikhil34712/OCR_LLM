@@ -42,12 +42,16 @@ import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import org.tensorflow.lite.support.image.ops.TransformToGrayscaleOp
 import java.util.Random
+import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions
+import kotlin.time.TimeSource
 
 class MainActivity : AppCompatActivity() {
     private lateinit var trOcrDetector: Interpreter
     private lateinit var trOcrRecognizer: Interpreter
     private lateinit var inputImageView: ImageView
     private lateinit var resultTextView: TextView
+    private lateinit var llmTextView: TextView
     private lateinit var processButton: Button
     private lateinit var indicesMat: MatOfInt
     private val alphabets = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -67,6 +71,9 @@ class MainActivity : AppCompatActivity() {
     private val recognitionModelOutputSize = 48
     private var recognitionResult = ByteBuffer.allocateDirect(recognitionModelOutputSize * 8)
     private lateinit var ocrResults: HashMap<String, Int>
+    private lateinit var llmInference: LlmInference
+
+
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -80,6 +87,10 @@ class MainActivity : AppCompatActivity() {
 
         recognitionResult.order(ByteOrder.nativeOrder())
         ocrResults = HashMap<String, Int>()
+
+        val options = LlmInferenceOptions.builder().setModelPath("/data/local/tmp/gemma-1.1-2b-it-cpu-int4.bin").setMaxTokens(512).setTopK(40).setTemperature(0.4F).setRandomSeed(101).build()
+
+        llmInference = LlmInference.createFromOptions(this, options)
 
         try {
             trOcrDetector = Interpreter(loadModelFile("1.tflite"))
@@ -104,10 +115,52 @@ class MainActivity : AppCompatActivity() {
     private fun performOCR() {
         val bitmapImage = getBitmapFromImageView()
         if (bitmapImage != null) {
+            val timeSource = TimeSource.Monotonic
+
+            val markD1 = timeSource.markNow()
+
             val detectionResults = detectTexts(bitmapImage)
+
+            val markD2 = timeSource.markNow()
+            val markD = markD2 - markD1
+
+            Log.d("Time","Detection Time: $markD")
+
+            val markR1 = timeSource.markNow()
             val resultBitmap = recognizeTexts(bitmapImage, detectionResults.first, detectionResults.second)
+            val markR2 = timeSource.markNow()
+            val markR = markR2 - markR1
+
+            Log.d("Time","Recognition Time: $markR")
+
             inputImageView.setImageBitmap(resultBitmap)
             resultTextView.text = ocrResults.keys.joinToString("\n")
+
+
+            val mark1 = timeSource.markNow()
+            Log.d("Time", "Time 1 Marked")
+
+            val systemPrompt = "Return the following input in JSON format. Make the first word a key, the second word a value, and so on. Input:\n"
+            val inputPrompt = systemPrompt + ocrResults.keys.joinToString("\n")
+            println(inputPrompt)
+            val result = llmInference.generateResponse(inputPrompt)
+            println(result)
+
+            val mark2 = timeSource.markNow()
+            Log.d("Time", "Time 2 Marked")
+            val elapsed = mark2 - mark1
+            Log.d("OCR", "result: $result")
+            Log.d("Time", "Elapsed: $elapsed")
+
+            val promptTokenSize = llmInference.sizeInTokens(inputPrompt)
+
+            Log.d("Tokens", "Input prompt token size: $promptTokenSize")
+
+            val basicTokenSpeed = promptTokenSize / elapsed.inWholeSeconds
+
+            Log.d("Time", "Crude Token/s : $basicTokenSpeed")
+
+
         } else {
             resultTextView.text = "Error loading image"
         }
