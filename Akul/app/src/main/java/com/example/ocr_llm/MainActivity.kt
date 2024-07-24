@@ -142,17 +142,17 @@ class MainActivity : AppCompatActivity() {
 
             val systemPrompt = "Return the following input in JSON format. Make the first word a key, the second word a value, and so on. Input:\n"
             val inputPrompt = systemPrompt + ocrResults.keys.joinToString("\n")
-            println(inputPrompt)
             val result = llmInference.generateResponse(inputPrompt)
             println(result)
+            println(result.substringAfter("Output:").substringBefore("```"))
 
             val mark2 = timeSource.markNow()
             Log.d("Time", "Time 2 Marked")
             val elapsed = mark2 - mark1
-            Log.d("OCR", "result: $result")
             Log.d("Time", "Elapsed: $elapsed")
 
             val promptTokenSize = llmInference.sizeInTokens(inputPrompt)
+            val outputTokenSize = llmInference.sizeInTokens(result)
 
             Log.d("Tokens", "Input prompt token size: $promptTokenSize")
 
@@ -343,7 +343,7 @@ class MainActivity : AppCompatActivity() {
                 val alphabetIndex = recognitionResult.getInt(k * 8)
                 if (alphabetIndex in 0..alphabets.length - 1) recognizedText += alphabets[alphabetIndex]
             }
-            Log.d("Recognition result:", recognizedText)
+//            Log.d("Recognition result:", recognizedText)
             if (recognizedText != "") {
                 ocrResults[recognizedText] = getRandomColor()
             }
