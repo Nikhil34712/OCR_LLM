@@ -1,4 +1,5 @@
 package com.example.ocr_llm
+
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -9,24 +10,27 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import org.tensorflow.lite.Interpreter
+import org.opencv.android.OpenCVLoader
 import java.io.FileInputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
+import kotlin.time.TimeSource
+import com.google.mediapipe.tasks.genai.llminference.LlmInference
 
 class MainActivity : AppCompatActivity() {
-    private lateinit var trOcrInterpreter: Interpreter
+    private lateinit var trOcrDetector: Interpreter
+    private lateinit var trOcrRecognizer: Interpreter
+    private lateinit var ocrProcessor: OCRProcessor
     private lateinit var inputImageView: ImageView
     private lateinit var resultTextView: TextView
+    private lateinit var llmTextView: TextView
     private lateinit var processButton: Button
+    private lateinit var llmInference: LlmInference
 
-    private val imageSize = 320
-    private val numChannels = 3
-    private val maxOutputLength = 128
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
+        OpenCVLoader.initDebug()
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
@@ -34,9 +38,12 @@ class MainActivity : AppCompatActivity() {
         resultTextView = findViewById(R.id.resultTextView)
         processButton = findViewById(R.id.processButton)
 
+//        llmInference = LlmInference.createFromOptions(this, options)
+
         try {
-            trOcrInterpreter = Interpreter(loadModelFile("crnn_dr.tflite"))
-            println(trOcrInterpreter.inputTensorCount)
+            trOcrDetector = Interpreter(loadModelFile("1.tflite"))
+            trOcrRecognizer = Interpreter(loadModelFile("2.tflite"))
+            ocrProcessor = OCRProcessor(trOcrDetector, trOcrRecognizer)
         } catch (e: Exception) {
             e.printStackTrace()
             resultTextView.text = "Error loading model: ${e.message}"
@@ -44,18 +51,6 @@ class MainActivity : AppCompatActivity() {
 
         processButton.setOnClickListener { performOCR() }
     }
-
-    private fun logModelInfo(interpreter: Interpreter) {
-        val inputTensor = interpreter.getInputTensor(0)
-        val outputTensor = interpreter.getOutputTensor(0)
-
-        Log.d("OCR", "Input shape: ${inputTensor.shape().contentToString()}")
-        Log.d("OCR", "Input dataType: ${inputTensor.dataType()}")
-        Log.d("OCR", "Output shape: ${outputTensor.shape().contentToString()}")
-        Log.d("OCR", "Output dataType: ${outputTensor.dataType()}")
-    }
-
-
 
     private fun loadModelFile(modelName: String): MappedByteBuffer {
         val fileDescriptor = assets.openFd(modelName)
@@ -67,98 +62,74 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun performOCR() {
-        val bitmap = getBitmapFromImageView()
-        if (bitmap != null) {
-            val inputBuffer = preprocessImage(bitmap)
-            Log.d("OCR", "Input buffer size: ${inputBuffer.capacity()} bytes")
+        val bitmapImage = getBitmapFromImageView()
+        if (bitmapImage != null) {
+            val timeSource = TimeSource.Monotonic
 
-            val inputTensor = trOcrInterpreter.getInputTensor(0)
-            val outputTensor = trOcrInterpreter.getOutputTensor(0)
-            Log.d("OCR", "Input tensor shape: ${inputTensor.shape().contentToString()}")
-            Log.d("OCR", "Output tensor shape: ${outputTensor.shape().contentToString()}")
+            val markD1 = timeSource.markNow()
 
-            val outputSize = outputTensor.numBytes()
-            val outputBuffer = ByteBuffer.allocateDirect(outputSize).order(ByteOrder.nativeOrder())
+            val detectionResults = ocrProcessor.detectTexts(bitmapImage)
 
-            try {
-                trOcrInterpreter.run(inputBuffer, outputBuffer)
-                Log.d("OCR", "Model execution successful")
+            val markD2 = timeSource.markNow()
+            val markD = markD2 - markD1
 
-                val result = postprocessOutput(outputBuffer)
-                Log.d("OCR", "OCR Result: $result")
-                resultTextView.text = result
-            } catch (e: Exception) {
-                Log.e("OCR", "Error during OCR: ${e.message}", e)
-                resultTextView.text = "Error: ${e.message}"
-            }
+            Log.d("Time", "Detection Time: $markD")
+
+            val markR1 = timeSource.markNow()
+            val resultBitmap = ocrProcessor.recognizeTexts(
+                bitmapImage,
+                detectionResults.first,
+                detectionResults.second
+            )
+            val markR2 = timeSource.markNow()
+            val markR = markR2 - markR1
+
+            Log.d("Time", "Recognition Time: $markR")
+
+            inputImageView.setImageBitmap(resultBitmap)
+            val ocrResults = ocrProcessor.getOcrResults()
+            resultTextView.text = ocrResults.keys.joinToString("\n")
+
+
+//            val mark1 = timeSource.markNow()
+//            Log.d("Time", "Time 1 Marked")
+//
+//            val systemPrompt = "Return the following input in JSON format. Make the first word a key, the second word a value, and so on. Input:\n"
+//            val inputPrompt = systemPrompt + ocrResults.keys.joinToString("\n")
+//            val result = llmInference.generateResponse(inputPrompt)
+//            println(result)
+//            println(result.substringAfter("Output:").substringBefore("```"))
+//
+//            val mark2 = timeSource.markNow()
+//            Log.d("Time", "Time 2 Marked")
+//            val elapsed = mark2 - mark1
+//            Log.d("Time", "Elapsed: $elapsed")
+//
+//            val promptTokenSize = llmInference.sizeInTokens(inputPrompt)
+//            val outputTokenSize = llmInference.sizeInTokens(result)
+//
+//            Log.d("Tokens", "Input prompt token size: $promptTokenSize")
+//
+//            val basicTokenSpeed = promptTokenSize / elapsed.inWholeSeconds
+//
+//            Log.d("Time", "Crude Token/s : $basicTokenSpeed")
+
+
         } else {
-            resultTextView.text = "Error: Could not get bitmap from image view"
+            resultTextView.text = "Error loading image"
         }
     }
+
+
     private fun getBitmapFromImageView(): Bitmap? {
         return try {
-            val inputStream = assets.open("sample_image.jpg")
-            BitmapFactory.decodeStream(inputStream)
+            val inputStream = assets.open("16.jpg")
+            val bitmap = BitmapFactory.decodeStream(inputStream)
+            Log.d("OCR", "Image Width: ${bitmap.width}, Image Height: ${bitmap.height}")
+            bitmap
         } catch (e: Exception) {
             e.printStackTrace()
             null
         }
     }
-
-    private fun preprocessImage(bitmap: Bitmap): ByteBuffer {
-        val modelInputWidth = 160
-        val modelInputHeight = 80
-        val channels = 1
-
-        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, modelInputWidth, modelInputHeight, true)
-        val byteBuffer = ByteBuffer.allocateDirect(modelInputWidth * modelInputHeight * channels)
-        byteBuffer.order(ByteOrder.nativeOrder())
-
-        val intValues = IntArray(modelInputWidth * modelInputHeight)
-        resizedBitmap.getPixels(intValues, 0, modelInputWidth, 0, 0, modelInputWidth, modelInputHeight)
-
-        for (pixelValue in intValues) {
-            val grayscale = (pixelValue shr 16 and 0xFF) * 0.299f +
-                    (pixelValue shr 8 and 0xFF) * 0.587f +
-                    (pixelValue and 0xFF) * 0.114f
-            byteBuffer.put((grayscale).toInt().toByte())
-        }
-
-        byteBuffer.rewind()
-        return byteBuffer
-    }
-
-    private fun postprocessOutput(outputBuffer: ByteBuffer): String {
-        outputBuffer.rewind()
-        val byteArray = ByteArray(outputBuffer.remaining())
-        outputBuffer.get(byteArray)
-
-
-        val decodedText = try {
-            String(byteArray, Charsets.UTF_8).trim()
-        } catch (e: Exception) {
-            "Error decoding text: ${e.message}"
-        }
-
-
-        if (decodedText.isBlank()) {
-            val intBuffer = outputBuffer.asIntBuffer()
-            val intArray = IntArray(intBuffer.remaining())
-            intBuffer.get(intArray)
-
-
-            val sb = StringBuilder()
-            for (index in intArray) {
-                if (index >= 0 && index < charMap.size) {
-                    sb.append(charMap[index])
-                }
-            }
-            return "Extracted Text: ${sb.toString().trim()}"
-        }
-
-        return "Extracted Text: $decodedText"
-    }
-
-    private val charMap = listOf(" ", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", ",", ":", "-", "(", ")", "/")
 }
-
